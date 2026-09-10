@@ -2192,30 +2192,22 @@
 
 
         function refreshTopicNavigationState() {
-            const topic = uniqueTopics[currentTopicIndex];
-            if (!topic) return;
-
-            const topicIndexes = [];
-            quizData.forEach((item, gi) => {
-                if (item.topic === topic) topicIndexes.push(gi);
-            });
-
-            const complete = topicIndexes.length > 0 &&
-                topicIndexes.every(gi => userAnswers[gi] !== undefined);
-
             const nextBtn = document.getElementById('nextBtn');
             const submitBtn = document.getElementById('submitBtn');
 
-            if (nextBtn && currentTopicIndex < uniqueTopics.length - 1) {
-                nextBtn.disabled = !complete;
-                nextBtn.style.opacity = complete ? '1' : '.62';
-                nextBtn.title = complete ? '' : 'या घटकातील सर्व प्रश्न सोडवा';
+            // Buttons always stay clickable.
+            // Missing-answer validation happens after click, so a stale
+            // answer-state can never leave navigation permanently disabled.
+            if (nextBtn) {
+                nextBtn.disabled = false;
+                nextBtn.style.opacity = '1';
+                nextBtn.title = '';
             }
 
-            if (submitBtn && currentTopicIndex === uniqueTopics.length - 1) {
-                submitBtn.disabled = !complete;
-                submitBtn.style.opacity = complete ? '1' : '.62';
-                submitBtn.title = complete ? '' : 'या घटकातील सर्व प्रश्न सोडवा';
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.style.opacity = '1';
+                submitBtn.title = '';
             }
         }
 
@@ -4020,7 +4012,7 @@
             '<span class="start-spinner" aria-hidden="true"></span>' +
             (phaseBefore === 'RESULT_LOOKUP_TODAY' || phaseBefore === 'RESULT_LOOKUP_PREVIOUS'
                 ? 'निकाल लोड होत आहे...'
-                : 'टेस्ट सुरू होत आहे...');
+                : 'टेस्ट सुरू होत आहे... कृपया थांबा');
 
         try {
             await startQuizAfterInfo();
@@ -4050,7 +4042,16 @@
         const m=document.getElementById('studentMobile').value.trim();
         if (!/^\d{10}$/.test(m)) return alert('📱 पालकांचा 10 अंकी मोबाईल नंबर भरा.');
         try {
-            await syncRuntimeConfigFromApi();
+            // Page load already syncs server time. Reuse that trusted clock
+            // for 2 minutes to avoid an unnecessary extra network round-trip.
+            const serverClockAgeMs = SERVER_SYNC_PERF
+                ? Math.max(0, performance.now() - SERVER_SYNC_PERF)
+                : Infinity;
+
+            if (!SERVER_SYNC_MS || serverClockAgeMs > 120000) {
+                await syncRuntimeConfigFromApi();
+            }
+
             const phase=getPortalPhase();
 
             if (phase==='RESULT_LOOKUP_TODAY' || phase==='RESULT_LOOKUP_PREVIOUS') {
@@ -4217,8 +4218,13 @@
             updatePreviousResultButton();
         } catch(e) {
             const b=document.querySelector('.btn-start');
-            if(b){b.disabled=true;b.innerHTML='⚠️ Server वेळ उपलब्ध नाही';}
-            setEntryStatus('<div class=\"status-screen\"><h2 style=\"color:var(--danger);\">⚠️ सर्व्हरशी संपर्क झाला नाही</h2><p style=\"font-weight:600;margin-top:8px;\">इंटरनेट/API तपासा आणि पेज पुन्हा उघडा.</p></div>');
+            if(b){
+                b.disabled=false;
+                b.innerHTML='▶️ टेस्ट सुरू करा';
+            }
+            // Do not replace the entry screen with a permanent failure.
+            // The Start button can retry the APIs on the next click.
+            console.error('Initial API sync failed:', e);
         }
     });
     </script>
