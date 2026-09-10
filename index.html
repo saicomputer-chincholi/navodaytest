@@ -1897,19 +1897,35 @@
         }
 
         async function syncRuntimeConfigFromApi() {
-            if (!isConfiguredApiUrl(QUESTIONS_API_URL)) return;
-            try {
-                const info = await fetchApiJson(QUESTIONS_API_URL + "?action=getTestInfo", 10000);
-                if (!info || info.ok === false) return;
-                if (Number.isFinite(Number(info.startHour))) START_HOUR = Number(info.startHour);
-                if (Number.isFinite(Number(info.internalEndHour))) END_HOUR = Number(info.internalEndHour);
-                if (Number.isFinite(Number(info.publicEndHour))) PUBLIC_END_HOUR = Number(info.publicEndHour);
-                if (Number.isFinite(Number(info.examDurationSeconds)) && Number(info.examDurationSeconds) > 0) {
-                    EXAM_DURATION_SECONDS = Number(info.examDurationSeconds);
-                    if (!examStartedAt) remainingSeconds = EXAM_DURATION_SECONDS;
-                }
-            } catch (e) {
-                // Runtime defaults वापरले जातील.
+            let info = null;
+
+            // Results API is preferred for authoritative server time.
+            if (isConfiguredApiUrl(RESULTS_API_URL)) {
+                try {
+                    const r = await fetchApiJson(RESULTS_API_URL + "?action=getTestInfo", 10000);
+                    if (r && r.ok !== false && Number.isFinite(Number(r.serverNowMs))) info = r;
+                } catch (_) {}
+            }
+
+            // Questions API is the fallback and also supplies current quiz configuration.
+            if (!info && isConfiguredApiUrl(QUESTIONS_API_URL)) {
+                try {
+                    const q = await fetchApiJson(QUESTIONS_API_URL + "?action=getTestInfo", 10000);
+                    if (q && q.ok !== false && Number.isFinite(Number(q.serverNowMs))) info = q;
+                } catch (_) {}
+            }
+
+            if (!info) throw new Error("SERVER_TIME_UNAVAILABLE");
+
+            // This was the missing step: without it getPortalPhase() returned SERVER_UNAVAILABLE.
+            setServerClock(info);
+
+            if (Number.isFinite(Number(info.startHour))) START_HOUR = Number(info.startHour);
+            if (Number.isFinite(Number(info.internalEndHour))) END_HOUR = Number(info.internalEndHour);
+            if (Number.isFinite(Number(info.publicEndHour))) PUBLIC_END_HOUR = Number(info.publicEndHour);
+            if (Number.isFinite(Number(info.examDurationSeconds)) && Number(info.examDurationSeconds) > 0) {
+                EXAM_DURATION_SECONDS = Number(info.examDurationSeconds);
+                if (!examStartedAt) remainingSeconds = EXAM_DURATION_SECONDS;
             }
         }
 
@@ -1917,7 +1933,6 @@
             const startBtn = document.querySelector('.btn-start');
             quizDataReady = false;
             quizDataLoadError = "";
-            if (startBtn) { startBtn.disabled = true; startBtn.innerHTML = '⏳ टेस्ट लोड होत आहे...'; }
 
             try {
                 if (!isConfiguredApiUrl(QUESTIONS_API_URL)) throw new Error("QUESTIONS_API_URL सेट केलेली नाही.");
@@ -1937,13 +1952,12 @@
                 if (!quizData.length || !uniqueTopics.length) throw new Error("आजचा प्रश्नसंच रिकामा आहे.");
 
                 quizDataReady = true;
-                if (startBtn) { startBtn.disabled = false; startBtn.innerHTML = '▶️ टेस्ट सुरू करा'; }
+                if (startBtn && startBtn.dataset.processing !== '1') { startBtn.disabled = false; startBtn.innerHTML = '▶️ टेस्ट सुरू करा'; }
             } catch (error) {
                 quizDataReady = false;
                 quizDataLoadError = error && error.message ? error.message : "डेटा लोड झाला नाही";
-                if (startBtn) { startBtn.disabled = true; startBtn.innerHTML = '⚠️ टेस्ट उपलब्ध नाही'; }
-                const box = document.getElementById('quiz-screen');
-                if (box) box.innerHTML = `<div class="status-screen"><h2 style="color:var(--danger);">⚠️ टेस्ट लोड झाली नाही</h2><p style="font-weight:600;margin-top:8px;">इंटरनेट/API तपासा आणि पेज पुन्हा उघडा.</p><p style="color:#64748b;margin-top:5px;">${escapeHTML(quizDataLoadError)}</p></div>`;
+                if (startBtn && startBtn.dataset.processing !== '1') { startBtn.disabled = false; startBtn.innerHTML = '▶️ टेस्ट सुरू करा'; }
+                // Keep the entry form usable. A click on "टेस्ट सुरू करा" will retry loading.
                 console.error("Daily quiz API error:", error);
             }
         }
