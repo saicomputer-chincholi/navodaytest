@@ -1896,7 +1896,7 @@
             }
         }
 
-        async function syncRuntimeConfigFromApi() {
+        async function syncRuntimeConfigFromApiLegacy() {
             let info = null;
 
             // Results API is preferred for authoritative server time.
@@ -1936,7 +1936,13 @@
 
             try {
                 if (!isConfiguredApiUrl(QUESTIONS_API_URL)) throw new Error("QUESTIONS_API_URL सेट केलेली नाही.");
-                await syncRuntimeConfigFromApi();
+
+                const clockAgeMs = SERVER_SYNC_PERF
+                    ? Math.max(0, performance.now() - SERVER_SYNC_PERF)
+                    : Infinity;
+                if (!SERVER_SYNC_MS || clockAgeMs > 120000) {
+                    await syncRuntimeConfigFromApi();
+                }
 
                 const data = await fetchApiJson(
                     QUESTIONS_API_URL + "?action=getDailyQuestions&date=" + encodeURIComponent(getTodayISO()),
@@ -2244,72 +2250,90 @@
 
         function validateCurrentTopicQuestions() {
             syncCurrentTopicAnswersFromDOM();
+
             const topic = uniqueTopics[currentTopicIndex];
-            let firstMissing = -1;
+            const topicIndexes = [];
 
             quizData.forEach((item, gi) => {
-                if (item.topic === topic && userAnswers[gi] === undefined) {
-                    const card = document.getElementById('q-card-' + gi);
-                    if (card) {
-                        card.classList.remove('error-highlight');
-                        void card.offsetWidth;
-                        card.classList.add('error-highlight');
-                    }
-                    if (firstMissing === -1) firstMissing = gi;
-                }
+                if (item.topic === topic) topicIndexes.push(gi);
             });
 
-            if (firstMissing !== -1) {
-                window.__suppressBlur = true;
-                alert("📝 पुढे जाण्यापूर्वी या घटकातील सर्व प्रश्न सोडवा.");
-                setTimeout(() => {
-                    const card = document.getElementById('q-card-' + firstMissing);
-                    if (card) {
-                        const y = Math.max(0, card.getBoundingClientRect().top + window.pageYOffset - 90);
-                        window.scrollTo({ top: y, behavior: 'smooth' });
-                        card.classList.remove('error-highlight');
-                        void card.offsetWidth;
-                        card.classList.add('error-highlight');
-                    }
-                    window.__suppressBlur = false;
-                }, 100);
-                return false;
-            }
-            return true;
+            document.querySelectorAll('.question-card.error-highlight')
+                .forEach(card => card.classList.remove('error-highlight'));
+
+            const missing = topicIndexes.filter(
+                gi => !Number.isInteger(Number(userAnswers[gi])) || Number(userAnswers[gi]) < 0
+            );
+
+            if (!missing.length) return true;
+
+            const firstMissing = missing[0];
+
+            window.__suppressBlur = true;
+            alert("📝 पुढे जाण्यापूर्वी या घटकातील राहिलेला प्रश्न सोडवा.");
+
+            setTimeout(() => {
+                const card = document.getElementById('q-card-' + firstMissing);
+                if (card) {
+                    card.classList.add('error-highlight');
+                    const y = Math.max(
+                        0,
+                        card.getBoundingClientRect().top + window.pageYOffset - 90
+                    );
+                    window.scrollTo({ top: y, behavior: 'smooth' });
+                }
+                window.__suppressBlur = false;
+            }, 100);
+
+            return false;
         }
 
         function validateAllQuestions() {
-            let firstMissing = -1;
+            // Capture the currently visible native radio state first.
+            // This covers label/radio browser-state edge cases.
+            syncCurrentTopicAnswersFromDOM();
 
-            quizData.forEach((item, gi) => {
-                if (userAnswers[gi] === undefined) {
-                    if (firstMissing === -1) firstMissing = gi;
-                    const card = document.getElementById('q-card-' + gi);
-                    if (card) {
-                        card.classList.remove('error-highlight');
-                        void card.offsetWidth;
-                        card.classList.add('error-highlight');
-                    }
+            // Remove any old validation highlight before a new check.
+            document.querySelectorAll('.question-card.error-highlight')
+                .forEach(card => card.classList.remove('error-highlight'));
+
+            let firstMissing = -1;
+            for (let gi = 0; gi < quizData.length; gi++) {
+                if (!Number.isInteger(Number(userAnswers[gi])) || Number(userAnswers[gi]) < 0) {
+                    firstMissing = gi;
+                    break;
                 }
-            });
+            }
 
             if (firstMissing === -1) return true;
 
-            const missingTopicIndex = uniqueTopics.findIndex(topic => quizData[firstMissing]?.topic === topic);
+            const missingTopic = quizData[firstMissing]?.topic;
+            const missingTopicIndex = uniqueTopics.findIndex(topic => topic === missingTopic);
+
             if (missingTopicIndex >= 0 && missingTopicIndex !== currentTopicIndex) {
                 renderTopicPage(missingTopicIndex);
             }
 
             window.__suppressBlur = true;
-            alert("📝 टेस्ट सबमिट करण्यापूर्वी सर्व प्रश्न सोडवा.");
+            alert("📝 टेस्ट सबमिट करण्यापूर्वी हा राहिलेला प्रश्न सोडवा.");
+
             setTimeout(() => {
+                // Clear again because renderTopicPage creates fresh cards.
+                document.querySelectorAll('.question-card.error-highlight')
+                    .forEach(card => card.classList.remove('error-highlight'));
+
                 const card = document.getElementById('q-card-' + firstMissing);
                 if (card) {
-                    const y = Math.max(0, card.getBoundingClientRect().top + window.pageYOffset - 90);
+                    card.classList.add('error-highlight');
+                    const y = Math.max(
+                        0,
+                        card.getBoundingClientRect().top + window.pageYOffset - 90
+                    );
                     window.scrollTo({ top: y, behavior: 'smooth' });
                 }
                 window.__suppressBlur = false;
             }, 100);
+
             return false;
         }
 
@@ -3808,21 +3832,64 @@
     }
 
     async function syncRuntimeConfigFromApi(){
-        let info=null;
-        try {
-            if (isConfiguredApiUrl(RESULTS_API_URL)) info=await fetchApiJson(RESULTS_API_URL+'?action=getTestInfo',10000);
-        } catch(e){}
-        if (!info || info.ok===false) {
-            if (!isConfiguredApiUrl(QUESTIONS_API_URL)) throw new Error('SERVER_TIME_UNAVAILABLE');
-            info=await fetchApiJson(QUESTIONS_API_URL+'?action=getTestInfo',10000);
+        const getInfo = async (baseUrl) => {
+            if (!isConfiguredApiUrl(baseUrl)) return null;
+            try {
+                const info = await fetchApiJson(baseUrl + '?action=getTestInfo', 8000);
+                return (info && info.ok !== false && Number.isFinite(Number(info.serverNowMs)))
+                    ? info
+                    : null;
+            } catch (_) {
+                return null;
+            }
+        };
+
+        let info = null;
+
+        // 3 short attempts. Both APIs are queried in parallel so one slow
+        // deployment cannot unnecessarily hold up the page.
+        for (let attempt = 0; attempt < 3 && !info; attempt++) {
+            const [resultsInfo, questionsInfo] = await Promise.all([
+                getInfo(RESULTS_API_URL),
+                getInfo(QUESTIONS_API_URL)
+            ]);
+
+            info = resultsInfo || questionsInfo || null;
+
+            if (!info && attempt < 2) {
+                await new Promise(resolve => setTimeout(resolve, 600 + attempt * 500));
+            }
         }
-        if (!info || info.ok===false || !Number.isFinite(Number(info.serverNowMs))) throw new Error('SERVER_TIME_UNAVAILABLE');
+
+        // If this page already obtained a valid server clock, a temporary
+        // network failure must never destroy it.
+        if (!info) {
+            if (SERVER_SYNC_MS && SERVER_START_MS && SERVER_INTERNAL_END_MS) {
+                return {
+                    ok: true,
+                    reusedTrustedClock: true,
+                    serverNowMs: getTrustedNowMs()
+                };
+            }
+            throw new Error('SERVER_TIME_UNAVAILABLE');
+        }
+
         setServerClock(info);
-        if (Number.isFinite(Number(info.startHour))) START_HOUR=Number(info.startHour);
-        if (Number.isFinite(Number(info.internalEndHour))) END_HOUR=Number(info.internalEndHour);
-        if (Number.isFinite(Number(info.publicEndHour))) PUBLIC_END_HOUR=Number(info.publicEndHour);
-        if (Number.isFinite(Number(info.examDurationSeconds)) && Number(info.examDurationSeconds)>0) EXAM_DURATION_SECONDS=Number(info.examDurationSeconds);
-        else if (Number.isFinite(Number(info.examDurationMinutes))) EXAM_DURATION_SECONDS=Number(info.examDurationMinutes)*60;
+
+        if (Number.isFinite(Number(info.startHour))) START_HOUR = Number(info.startHour);
+        if (Number.isFinite(Number(info.internalEndHour))) END_HOUR = Number(info.internalEndHour);
+        if (Number.isFinite(Number(info.publicEndHour))) PUBLIC_END_HOUR = Number(info.publicEndHour);
+
+        if (Number.isFinite(Number(info.examDurationSeconds)) && Number(info.examDurationSeconds) > 0) {
+            EXAM_DURATION_SECONDS = Number(info.examDurationSeconds);
+        } else if (Number.isFinite(Number(info.examDurationMinutes)) && Number(info.examDurationMinutes) > 0) {
+            EXAM_DURATION_SECONDS = Number(info.examDurationMinutes) * 60;
+        }
+
+        if (!examStartedAt && !SERVER_DEADLINE_MS) {
+            remainingSeconds = EXAM_DURATION_SECONDS;
+        }
+
         return info;
     }
 
@@ -3905,9 +3972,13 @@
             return false;
         }
 
-        if (info) info.style.display='none';
-        if (timing) timing.style.display='none';
-        setEntryStatus('<div class="status-screen"><h2 style="color:var(--danger);">⚠️ सर्व्हर वेळ उपलब्ध नाही</h2><p style="font-weight:600;margin-top:8px;">इंटरनेट/API तपासा आणि पेज पुन्हा उघडा.</p></div>');
+        if (info) info.style.display='block';
+        if (timing) {
+            timing.style.display='block';
+            timing.innerHTML='⏳ सर्व्हरशी सुरक्षित कनेक्शन तपासले जात आहे. टेस्ट सुरू करा वर क्लिक केल्यास पुन्हा प्रयत्न होईल.';
+        }
+        setResultLoginMode(false);
+        setEntryStatus('');
         return false;
     }
 
@@ -4061,7 +4132,14 @@
                 configurePortalForPhase();
                 return;
             }
-            if (phase!=='TEST_OPEN') return alert('⚠️ Server वेळ उपलब्ध नाही.');
+            if (phase!=='TEST_OPEN') {
+                try {
+                    await syncRuntimeConfigFromApi();
+                } catch (_) {}
+                if (getPortalPhase()!=='TEST_OPEN') {
+                    return alert('❌ Server शी संपर्क होत नाही. इंटरनेट तपासून पुन्हा प्रयत्न करा.');
+                }
+            }
 
             const n=document.getElementById('studentName').value.trim();
             if (!n || n.length<5 || n.length>20 || !/^[A-Za-z ]+$/.test(n)) return alert('👤 विद्यार्थ्याचे नाव 5 ते 20 इंग्रजी अक्षरांत भरा.');
@@ -4208,24 +4286,50 @@
     // Initial server sync; browser storage is cleared on every page open/reload.
     // Questions are fetched only while today's test is actually open.
     window.addEventListener('load', async()=>{
-        try {
-            wipeBrowserStorageOnOpen();
-            volatileStore.clear();
-            await syncRuntimeConfigFromApi();
-            const phase=getPortalPhase();
-            configurePortalForPhase();
-            if (phase==='TEST_OPEN') await fetchDailyQuizData();
-            updatePreviousResultButton();
-        } catch(e) {
-            const b=document.querySelector('.btn-start');
-            if(b){
-                b.disabled=false;
-                b.innerHTML='▶️ टेस्ट सुरू करा';
+        wipeBrowserStorageOnOpen();
+        volatileStore.clear();
+
+        let synced = false;
+
+        for (let attempt = 0; attempt < 3 && !synced; attempt++) {
+            try {
+                await syncRuntimeConfigFromApi();
+                synced = true;
+            } catch (_) {
+                if (attempt < 2) {
+                    await new Promise(resolve => setTimeout(resolve, 700 + attempt * 600));
+                }
             }
-            // Do not replace the entry screen with a permanent failure.
-            // The Start button can retry the APIs on the next click.
-            console.error('Initial API sync failed:', e);
         }
+
+        if (synced) {
+            const phase = getPortalPhase();
+            configurePortalForPhase();
+
+            // Prefetch today's questions in the background so clicking Start
+            // normally needs only the attempt-start request.
+            if (phase === 'TEST_OPEN') {
+                fetchDailyQuizData().catch(() => {});
+            }
+        } else {
+            // Keep the form/button usable. Do not show a permanent failure page.
+            const info = document.getElementById('studentInfoBox');
+            const b = document.querySelector('.btn-start');
+            const timing = document.getElementById('timingAlertBar');
+
+            if (info) info.style.display = 'block';
+            if (b) {
+                b.disabled = false;
+                b.innerHTML = '▶️ टेस्ट सुरू करा';
+            }
+            if (timing) {
+                timing.style.display = 'block';
+                timing.innerHTML = '⏳ सर्व्हरशी कनेक्शन तपासले जात आहे. टेस्ट सुरू करा वर क्लिक करून पुन्हा प्रयत्न करा.';
+            }
+            setEntryStatus('');
+        }
+
+        updatePreviousResultButton();
     });
     </script>
 
