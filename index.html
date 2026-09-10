@@ -1867,10 +1867,6 @@
                 const response = await fetch(addCacheBust(url), {
                     method: "GET",
                     cache: "no-store",
-                    headers: {
-                        "Cache-Control": "no-cache, no-store, max-age=0",
-                        "Pragma": "no-cache"
-                    },
                     signal: controller.signal
                 });
                 if (!response.ok) throw new Error("API HTTP " + response.status);
