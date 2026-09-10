@@ -1080,6 +1080,26 @@
             color:#fbbf24 !important; text-shadow:0 1px 2px rgba(0,0,0,.25) !important;
         }
         #shareBtn:disabled, #pdfDownloadBtn:disabled { opacity:.82 !important; filter:none !important; }
+
+        .btn-start.is-loading {
+            cursor: wait;
+            pointer-events: none;
+            opacity: .88;
+            transform: none !important;
+        }
+        .btn-start .start-spinner {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            margin-right: 8px;
+            border: 3px solid rgba(255,255,255,.45);
+            border-top-color: #fff;
+            border-radius: 50%;
+            vertical-align: -3px;
+            animation: startSpin .75s linear infinite;
+        }
+        @keyframes startSpin { to { transform: rotate(360deg); } }
+
 </style>
 
     <style id="exam-security-css">
@@ -1213,7 +1233,7 @@
                     <input type="tel" id="studentMobile" placeholder="Enter 10 Digit Mobile Number" maxlength="10" autocomplete="off" oninput="handleMobileInput(this)">
                     <div class="input-hint">✓ फक्त इंग्रजी अंक (0-9) | अचूक 10 अंक</div>
                 </div>
-                <button type="button" class="btn-nav btn-start" style="width:100%;margin-top:14px;" onclick="startQuizAfterInfo()">▶️ टेस्ट सुरू करा</button>
+                <button type="button" id="startQuizBtn" class="btn-nav btn-start" style="width:100%;margin-top:14px;" onclick="beginStartQuiz(this)">▶️ टेस्ट सुरू करा</button>
                 <button type="button" id="previousResultBtn" class="btn-view-result" style="width:100%;margin-top:10px;display:none;" onclick="showPreviousDayResultFromForm()"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i> कालचे गुणपत्रक व निकाल पहा</button>
             </div>
 
@@ -2151,8 +2171,38 @@
             document.getElementById('prevBtn').style.display = idx > 0 ? 'flex' : 'none';
             document.getElementById('nextBtn').style.display = idx === uniqueTopics.length - 1 ? 'none' : 'flex';
             document.getElementById('submitBtn').style.display = idx === uniqueTopics.length - 1 ? 'flex' : 'none';
+            refreshTopicNavigationState();
             window.scrollTo({ top: 0, behavior: 'smooth' });
             if (window.__examSecurityHooks && window.__examSecurityHooks.afterRenderTopicPage) window.__examSecurityHooks.afterRenderTopicPage();
+        }
+
+
+        function refreshTopicNavigationState() {
+            const topic = uniqueTopics[currentTopicIndex];
+            if (!topic) return;
+
+            const topicIndexes = [];
+            quizData.forEach((item, gi) => {
+                if (item.topic === topic) topicIndexes.push(gi);
+            });
+
+            const complete = topicIndexes.length > 0 &&
+                topicIndexes.every(gi => userAnswers[gi] !== undefined);
+
+            const nextBtn = document.getElementById('nextBtn');
+            const submitBtn = document.getElementById('submitBtn');
+
+            if (nextBtn && currentTopicIndex < uniqueTopics.length - 1) {
+                nextBtn.disabled = !complete;
+                nextBtn.style.opacity = complete ? '1' : '.62';
+                nextBtn.title = complete ? '' : 'या घटकातील सर्व प्रश्न सोडवा';
+            }
+
+            if (submitBtn && currentTopicIndex === uniqueTopics.length - 1) {
+                submitBtn.disabled = !complete;
+                submitBtn.style.opacity = complete ? '1' : '.62';
+                submitBtn.title = complete ? '' : 'या घटकातील सर्व प्रश्न सोडवा';
+            }
         }
 
         function selectOption(gi, oi) {
@@ -2168,9 +2218,26 @@
             const card = document.getElementById('q-card-' + gi);
             if (card) card.classList.remove('error-highlight');
             if (window.__examSecurityHooks && window.__examSecurityHooks.afterSelectOption) window.__examSecurityHooks.afterSelectOption();
+            refreshTopicNavigationState();
+        }
+
+
+        function syncCurrentTopicAnswersFromDOM() {
+            const topic = uniqueTopics[currentTopicIndex];
+            quizData.forEach((item, gi) => {
+                if (item.topic !== topic) return;
+                const checked = document.querySelector('input[name="q' + gi + '"]:checked');
+                if (checked) {
+                    const value = Number(checked.value);
+                    if (Number.isInteger(value) && value >= 0 && value < item.options.length) {
+                        userAnswers[gi] = value;
+                    }
+                }
+            });
         }
 
         function validateCurrentTopicQuestions() {
+            syncCurrentTopicAnswersFromDOM();
             const topic = uniqueTopics[currentTopicIndex];
             let firstMissing = -1;
 
@@ -3872,6 +3939,8 @@
 
     function startExamTimer(){
         clearInterval(examTimerInterval);
+        const timerBar=document.getElementById('examTimerBar');
+        if (timerBar) timerBar.style.display='flex';
         const tick=()=>{
             const now=getTrustedNowMs();
             const left=SERVER_DEADLINE_MS && now ? Math.max(0,Math.ceil((SERVER_DEADLINE_MS-now)/1000)) : 0;
@@ -3920,6 +3989,47 @@
         quizData=restored;
         uniqueTopics=[...new Set(quizData.map(q=>q.topic))];
         return true;
+    }
+
+
+    async function beginStartQuiz(btn){
+        btn = btn || document.getElementById('startQuizBtn') || document.querySelector('.btn-start');
+        if (!btn || btn.dataset.processing === '1') return;
+
+        btn.dataset.processing = '1';
+        btn.disabled = true;
+        btn.classList.add('is-loading');
+
+        const originalHTML = btn.innerHTML;
+        const phaseBefore = getPortalPhase();
+        btn.innerHTML =
+            '<span class="start-spinner" aria-hidden="true"></span>' +
+            (phaseBefore === 'RESULT_LOOKUP_TODAY' || phaseBefore === 'RESULT_LOOKUP_PREVIOUS'
+                ? 'निकाल लोड होत आहे...'
+                : 'टेस्ट सुरू होत आहे...');
+
+        try {
+            await startQuizAfterInfo();
+        } finally {
+            const info = document.getElementById('studentInfoBox');
+            const stillOnEntry = info && getComputedStyle(info).display !== 'none';
+
+            if (stillOnEntry) {
+                btn.disabled = false;
+                btn.classList.remove('is-loading');
+                delete btn.dataset.processing;
+
+                const phaseAfter = getPortalPhase();
+                btn.innerHTML =
+                    (phaseAfter === 'RESULT_LOOKUP_TODAY' || phaseAfter === 'RESULT_LOOKUP_PREVIOUS')
+                        ? '📊 गुणपत्रक / स्कोअर कार्ड / प्रश्ननिहाय विश्लेषण पहा'
+                        : '▶️ टेस्ट सुरू करा';
+            } else {
+                btn.classList.remove('is-loading');
+                delete btn.dataset.processing;
+                btn.innerHTML = originalHTML;
+            }
+        }
     }
 
     async function startQuizAfterInfo(){
